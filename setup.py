@@ -14,14 +14,14 @@ def find_package_data(data_root, package_root):
 
 setup(
     name = "smarty",
-    version = "0.1.0",
+    version = "0.1.1",
     author = "John Chodera",
     author_email = "john.chodera@choderalab.org",
     description = ("Automated Bayesian atomtype sampling"),
     license = "GNU Lesser General Public License (LGPL), Version 3",
     keywords = "Bayesian atomtype sampling forcefield parameterization",
     url = "http://github.com/open-forcefield-group/smarty",
-    packages=['smarty', 'smarty/tests'],
+    packages=['smarty', 'smarty/tests', 'smarty/data'],
     long_description=read('README.md'),
     classifiers=[
         "Development Status :: 3 - Alpha",

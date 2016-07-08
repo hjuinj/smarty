@@ -22,11 +22,11 @@ def main():
     usage_string = """\
     Sample over atom types, optionally attempting to match atom types in a reference typed set of molecules.
 
-    usage: %prog --basetypes smartsfile --decorators smartsfile [--substitutions smartsfile] --molecules molfile [--reference molfile] --iterations niterations [--temperature temperature]
+    usage: %prog --basetypes smartsfile --initialtypes smartsfile --decorators smartsfile [--substitutions smartsfile] --molecules molfile [--reference molfile] --iterations niterations [--temperature temperature]
 
     example:
 
-    python %prog --basetypes=atomtypes/basetypes.smarts --decorators=atomtypes/decorators.smarts --substitutions=atomtypes/substitutions.smarts \
+    python %prog --basetypes=atomtypes/basetypes.smarts --initialtypes=atomtypes/initialtypes.smarts --decorators=atomtypes/decorators.smarts --substitutions=atomtypes/substitutions.smarts \
         --molecules=molecules/zinc-subset-tripos.mol2.gz --reference=molecules/zinc-subset-parm@frosst.mol2.gz --iterations 1000 --temperature=0.1
 
     """
@@ -35,7 +35,11 @@ def main():
 
     parser.add_option("-b", "--basetypes", metavar='BASETYPES',
                       action="store", type="string", dest='basetypes_filename', default=None,
-                      help="Filename defining base atom types as SMARTS atom matches.")
+                      help="Filename defining base or generic atom types as SMARTS atom matches; these are indestructible and normally are elemental atom types.")
+
+    parser.add_option("-f", "--initialtypes", metavar='BASETYPES',
+                      action="store", type="string", dest='initialtypes_filename', default=None,
+                      help="Filename defining initial (first) atom types as SMARTS atom matches.")
 
     parser.add_option("-d", "--decorators", metavar='DECORATORS',
                       action="store", type="string", dest='decorators_filename', default=None,
@@ -61,6 +65,14 @@ def main():
                       action="store", type="float", dest='temperature', default=0.1,
                       help="Effective temperature for Monte Carlo acceptance, indicating fractional tolerance of mismatched atoms (default: 0.1). If 0 is specified, will behave in a greedy manner.")
 
+    parser.add_option("-l", '--trajectory', metavar="TRAJECTORY_FILE",
+            action = "store", dest = "traj_file", default = "trajectory.csv",
+            help = "Name for trajectory file output, trajectory saves only changes to the list of 'atomtypes' for each iteration. For now, if the file name already exists, it just won't create a trajectory file")
+    
+    parser.add_option("-x", "--decoratorbehavior", metavar='DECORATOR_BEHAVIOR',
+                      action="store", type="string", dest='decorator_behavior', default='combinatorial-decorators',
+                      help="Choose between simple-decorators or combinatorial-decorators (default = combinatorial-decorators).")
+
     verbose = True
 
     # Parse command-line arguments.
@@ -70,6 +82,11 @@ def main():
     if (options.basetypes_filename is None) or (options.decorators_filename is None) or (options.molecules_filename is None):
         parser.print_help()
         parser.error("All input files must be specified.")
+    
+    # Ensure the Decorator Behavior option has been specified right
+    if not (options.decorator_behavior == 'simple-decorators' or options.decorator_behavior == 'combinatorial-decorators'):
+        parser.print_help()
+        parser.error("Option not valid for decorator behavior.")
 
     # Load and type all molecules in the specified dataset.
     import smarty.utils
@@ -81,7 +98,7 @@ def main():
         reference_typed_molecules = smarty.utils.read_molecules(options.reference_molecules_filename, verbose=True)
 
     # Construct atom type sampler.
-    atomtype_sampler = smarty.AtomTypeSampler(molecules, options.basetypes_filename, options.decorators_filename, replacements_filename=options.substitutions_filename, reference_typed_molecules=reference_typed_molecules, verbose=verbose, temperature=options.temperature)
+    atomtype_sampler = smarty.AtomTypeSampler(molecules, options.basetypes_filename, options.initialtypes_filename, options.decorators_filename, replacements_filename=options.substitutions_filename, reference_typed_molecules=reference_typed_molecules, verbose=verbose, temperature=options.temperature, decorator_behavior=options.decorator_behavior)
 
     # Start sampling atom types.
-    atomtype_sampler.run(options.iterations)
+    atomtype_sampler.run(options.iterations, options.traj_file)
