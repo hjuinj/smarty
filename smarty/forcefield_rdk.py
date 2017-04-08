@@ -1,31 +1,3 @@
-#!/usr/bin/env python
-
-#=============================================================================================
-# MODULE DOCSTRING
-#=============================================================================================
-
-"""
-forcefield.py
-
-OpenMM ForceField replacement using SMIRKS-based matching.
-
-AUTHORS
-
-John D. Chodera <john.chodera@choderalab.org>
-David L. Mobley <dmobley@mobleylab.org>
-
-Baseed on simtk.openmm.app.forcefield written by Peter Eastman.
-
-TODO:
-* Constraint handling
-* Move utility functions like 'generateTopologyFromOEMol()' elsewhere?
-* Use xml parser with 'sourceline' node attributes to aid debugging
-http://stackoverflow.com/questions/6949395/is-there-a-way-to-get-a-line-number-from-an-elementtree-element
-"""
-#=============================================================================================
-# GLOBAL IMPORTS
-#=============================================================================================
-
 import sys
 import string
 
@@ -40,33 +12,98 @@ import copy
 import re
 import numpy
 import random
-
-import openeye.oechem
-import openeye.oeomega
-import openeye.oequacpac
-
-from openeye import oechem, oequacpac
-
 from simtk import openmm, unit
 
 import time
 
 import networkx
 
-import smarty.environment as env
+#import smarty.environment as env
 import itertools
 
-#=============================================================================================
-# PRIVATE SUBROUTINES
-#=============================================================================================
+from rdkit import Chem
+from rdkit.Chem import AllChem
 
-def getSMIRKSMatches_OEMol(oemol, smirks, aromaticity_model = None): #TODO reread (sw)
-    """Find all sets of atoms in the provided oemol that match the provided SMIRKS strings.
+m = Chem.MolFromMolFile("/home/shuzhe/anaconda2/envs/my-rdkit-env/share/RDKit/Docs/Book/data/input.mol")
+for name in m.GetPropNames():
+    print name
+m.GetProp("_Name")
+generateTopologyFromRDKMol(m)
+qmol = Chem.MolFromSmarts( '[cH0:1][c:2]([cH0])!@[CX3!r:3]=[NX2!r:4]' )
+def a():
+    try:
+        qmol = Chem.MolFromSmarts( '[cH0:][c:2]([cH0])!@[CX3!r:3]=[NX2!r:4]' )
+    except Exception as msg:
+        print msg
+a()
+m = Chem.AddHs(m)
+AllChem.ComputeGasteigerCharges(m)
+tmp = []
+for atom in m.GetAtoms():
+    tmp.append(atom.GetProp('_GasteigerCharge'))
+    # print atom.GetAtomicNum()
+    # print atom.GetIdx()
+sum([float(i) for i in tmp])
+
+print type(m.GetAtoms()[0])
+type(m.GetAtoms())
+print(Chem.MolToMolBlock(m))
+n = m.__copy__()
+m
+n
+Chem.Kekulize(m)
+for bond in  m.GetBonds():
+    print bond.GetBondTypeAsDouble()
+
+#########################################################################3####
+
+
+def generateTopologyFromRDKMol(molecule):
+    """
+    06/04/2017
+
+    Generate an OpenMM Topology object from an RDKit molecule.
 
     Parameters
     ----------
-    oemol : OpenEye oemol
-        oemol to process with the SMIRKS in order to find matches
+    molecule : openeye.oechem.OEMol
+        The molecule from which a Topology object is to be generated.
+
+    Returns
+    -------
+    topology : simtk.openmm.app.Topology
+        The Topology object generated from `molecule`.
+
+    """
+    # Create a Topology object with one Chain and one Residue.
+    from simtk.openmm.app import Topology
+    topology = Topology()
+    chain = topology.addChain()
+    resname = molecule.GetProp("_Name")
+    residue = topology.addResidue(resname, chain)
+
+    # Create atoms in the residue.
+    for atom in molecule.GetAtoms():
+        name = str(atom.GetIdx()) #RDKit molecule type does not store unique name string for each atom
+        element = elem.Element.getByAtomicNumber(atom.GetAtomicNum())
+        atom = topology.addAtom(name, element, residue)
+
+    # Create bonds.
+    atoms = { atom.name : atom for atom in topology.atoms() }
+    for bond in molecule.GetBonds():
+        topology.addBond(atoms[str(bond.GetBeginAtom().GetIdx())], atoms[str(bond.GetEndAtom().GetIdx())])
+
+    return topology
+
+#############3
+def getSMIRKSMatches_RDKMol(rdkmol, smirks, aromaticity_model = None): #TODO reread (sw)
+    """Find all sets of atoms in the provided rdkmol that match the provided SMIRKS strings.
+    06/04/2017
+
+    Parameters
+    ----------
+    rdkmol : RDKit rdkmol
+        RDKit molecule to process with the SMIRKS in order to find matches
     smirks : str
         SMIRKS string with tagged atoms.
         If there are N tagged atoms numbered 1..N, the resulting matches will be N-tuples of atoms that match the corresponding tagged atoms.
@@ -76,20 +113,24 @@ def getSMIRKSMatches_OEMol(oemol, smirks, aromaticity_model = None): #TODO rerea
     Returns
     -------
     matches : list of tuples of atoms numbers
-        matches[index] is an N-tuple of atom numbers from the oemol
+        matches[index] is an N-tuple of atom numbers from the rdkmol
         Matches are returned in no guaranteed order.
     """
 
     # Make a copy of molecule so we don't influence original (probably safer than deepcopy per C Bayly)
-    mol = oechem.OEMol(oemol)
+    mol = rdkmol.__deepcopy__()
 
     # Set up query.
-    qmol = oechem.OEQMol()
-    if not oechem.OEParseSmarts(qmol, smirks):
-        raise Exception("Error parsing SMIRKS '%s'" % smirks)
+    qmol = Chem.MolFromSmarts(smirks)   #cannot catch the error
+    ind_map = {}
+    for atom in qmol.GetAtoms():
+        map_num = atom.GetAtomMapNum()
+        if map_num:
+            ind_map[map_num - 1] = atom.GetIdx()
+    map_list = [ind_map[x] for x in sorted(ind_map)]
 
     # Determine aromaticity model
-    if aromaticity_model:
+    if aromaticity_model:  #TODO  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         if type(aromaticity_model) == str:
             # Check if the user has provided a manually-specified aromaticity_model
             if hasattr(oechem, aromaticity_model):
@@ -110,61 +151,28 @@ def getSMIRKSMatches_OEMol(oemol, smirks, aromaticity_model = None): #TODO rerea
     # Perform matching on each mol
     matches = list()
 
-    # We require non-unique matches, i.e. all matches
-    unique = False
-    ss = oechem.OESubSearch(qmol)
-    matches = []
-    for match in ss.Match( mol, unique):
-        # Compile list of atom indices that match the pattern tags
+    for match in mol.GetSubstructMatches(qmol) :
         atom_indices = dict()
-        for ma in match.GetAtoms():
-            if ma.pattern.GetMapIdx() != 0:
-                atom_indices[ma.pattern.GetMapIdx()-1] = ma.target.GetIdx()
-        # Compress into list
-        atom_indices = [ atom_indices[index] for index in range(len(atom_indices)) ]
-        # Store
-        matches.append( tuple(atom_indices) )
+        mas = [match[x] for x in map_list]
+        matches.append(tuple(mas))
 
     return matches
-
-#=============================================================================================
-# Augmented Topology
-#=============================================================================================
-
-def generateTopologyFromOEMol(molecule):
-    """
-    Generate an OpenMM Topology object from an OEMol molecule.
-
-    Parameters
-    ----------
-    molecule : openeye.oechem.OEMol
-        The molecule from which a Topology object is to be generated.
-
-    Returns
-    -------
-    topology : simtk.openmm.app.Topology
-        The Topology object generated from `molecule`.
-
-    """
-    # Create a Topology object with one Chain and one Residue.
-    from simtk.openmm.app import Topology
-    topology = Topology()
-    chain = topology.addChain()
-    resname = molecule.GetTitle()
-    residue = topology.addResidue(resname, chain)
-
-    # Create atoms in the residue.
-    for atom in molecule.GetAtoms():
-        name = atom.GetName()
-        element = elem.Element.getByAtomicNumber(atom.GetAtomicNum())
-        atom = topology.addAtom(name, element, residue)
-
-    # Create bonds.
-    atoms = { atom.name : atom for atom in topology.atoms() }
-    for bond in molecule.GetBonds():
-        topology.addBond(atoms[bond.GetBgn().GetName()], atoms[bond.GetEnd().GetName()])
-
-    return topology
+    # # We require non-unique matches, i.e. all matches
+    # unique = False
+    # ss = oechem.OESubSearch(qmol)
+    # matches = []
+    # for match in ss.Match( mol, unique):
+    #     # Compile list of atom indices that match the pattern tags
+    #     atom_indices = dict()
+    #     for ma in match.GetAtoms():
+    #         if ma.pattern.GetMapIdx() != 0:
+    #             atom_indices[ma.pattern.GetMapIdx()-1] = ma.target.GetIdx()
+    #     # Compress into list
+    #     atom_indices = [ atom_indices[index] for index in range(len(atom_indices)) ]
+    #     # Store
+    #     matches.append( tuple(atom_indices) )
+    #
+    # return matches
 
 def generateGraphFromTopology(topology):
     """Geneate a NetworkX graph from a Topology object.
@@ -189,11 +197,15 @@ def generateGraphFromTopology(topology):
         G.add_edge(atom1.index, atom2.index)
 
     return G
+#=============================================================================================
+# Augmented Topology
+#=============================================================================================
+
 
 class _Topology(Topology):
     """Augmented Topology object which adds:
 
-    self._reference_molecules is a list of OEMol for the reference molecules
+    self._reference_molecules is a list of RDkit molecules for the reference molecules
     self._reference_to_topology_atom_mappings[reference_molecule] is a list of dicts, where each dict maps the atom indices of atoms in the reference molecule onto an equivalent atom index for a topology atom.
     self._bondorders is a list of floating point bond orders for the bonds in the Topology.
     self._bondorders_by_atomindices is a dict of floating point bond orders for the bonds in the Topology, keyed by indices of the atoms involved.
@@ -314,7 +326,7 @@ class _Topology(Topology):
         atom2 = self._atoms[atom_index_2]
         return atom2 in self._bondedAtoms[atom1]
 
-    def _identifyMolecules(self):
+    def _identifyMolecules(self): #cool function (sw)
         """Identify all unique reference molecules and atom mappings to all instances in the Topology.
         """
         import networkx as nx
@@ -327,7 +339,7 @@ class _Topology(Topology):
         self._reference_molecule_graphs = list()
         for reference_molecule in self._reference_molecules:
             # Generate Topology
-            reference_molecule_topology = generateTopologyFromOEMol(reference_molecule)
+            reference_molecule_topology = generateTopologyFromRDKMol(reference_molecule)
             # Generate Graph
             reference_molecule_graph = generateGraphFromTopology(reference_molecule_topology)
             self._reference_molecule_graphs.append(reference_molecule_graph)
@@ -360,7 +372,7 @@ class _Topology(Topology):
                     msg += 'Atom %8d %5s %5d %3s\n' % (atoms[index].index, atoms[index].name, atoms[index].residue.index, atoms[index].residue.name)
                 raise Exception(msg)
 
-    def _updateBondOrders(self, Wiberg = False):
+    def _updateBondOrders(self, Wiberg = False):#TODO Wiberg not supported by RDKit (sw)
         """Update and store list of bond orders for the molecules in this Topology. Can be used for initialization of bondorders list, or for updating bond orders in the list.
 
         Parameters:
@@ -371,22 +383,56 @@ class _Topology(Topology):
         """
         # Initialize
         self._bondorders=list()
-        self._bondorders_by_atomindices = {}
+        self._bondorders_by_atomindices = dict()
         # Loop over reference molecules and pull bond orders
 
+        # for mol in self._reference_molecules:
+        #     # Pull mappings for this molecule
+        #     mappings = self._reference_to_topology_atom_mappings[mol]
+        #     # Loop over bonds
+        #     for idx,bond in enumerate(mol.GetBonds()):
+        #         # Get atom indices involved in bond
+        #         at1 = bond.GetBgn().GetIdx()
+        #         at2 = bond.GetEnd().GetIdx()
+        #         # Get bond order
+        #         if not Wiberg:
+        #             order = bond.GetOrder()
+        #         else:
+        #             order = bond.GetData('WibergBondOrder')
+        #         # Convert atom numbers to topology atom numbers; there may be multiple matches
+        #         for mapping in mappings:
+        #             topat1 = None
+        #             topat2 = None
+        #             for mapatom in mapping:
+        #                 if mapatom==at1:
+        #                     topat1 = mapping[mapatom]
+        #                 elif mapatom==at2:
+        #                     topat2 = mapping[mapatom]
+        #             if topat1==None or topat2==None:
+        #                 raise ValueError("No mapping found for these topology atoms (indices %s-%s)." % (at1, at2))
+        #             # Store bond order to re-use below and elsewhere; store in both directions
+        #             if not topat1 in self._bondorders_by_atomindices:
+        #                 self._bondorders_by_atomindices[topat1] = {}
+        #             if not topat2 in self._bondorders_by_atomindices:
+        #                 self._bondorders_by_atomindices[topat2] = {}
+        #             self._bondorders_by_atomindices[topat2][topat1] = order
+        #             self._bondorders_by_atomindices[topat1][topat2] = order
+        #
         for mol in self._reference_molecules:
             # Pull mappings for this molecule
             mappings = self._reference_to_topology_atom_mappings[mol]
             # Loop over bonds
             for idx,bond in enumerate(mol.GetBonds()):
                 # Get atom indices involved in bond
-                at1 = bond.GetBgn().GetIdx()
-                at2 = bond.GetEnd().GetIdx()
+                at1 = bond.GetBeginAtom().GetIdx()
+                at2 = bond.GetEndAtom().GetIdx()
                 # Get bond order
-                if not Wiberg:
-                    order = bond.GetOrder()
-                else:
-                    order = bond.GetData('WibergBondOrder')
+                if not Wiberg:  #TODO here (sw)
+                    # order = bond.GetOrder()
+                    Chem.Kekulize(mol)
+                    order = int(bond.GetBondTypeAsDouble())
+                # else:
+                #     order = bond.GetData('WibergBondOrder')
                 # Convert atom numbers to topology atom numbers; there may be multiple matches
                 for mapping in mappings:
                     topat1 = None
@@ -403,7 +449,7 @@ class _Topology(Topology):
                         self._bondorders_by_atomindices[topat1] = {}
                     if not topat2 in self._bondorders_by_atomindices:
                         self._bondorders_by_atomindices[topat2] = {}
-                    self._bondorders_by_atomindices[topat2][topat1] = order
+                    self._bondorders_by_atomindices[topat2][topat1] = order #used for computationa convenience (sw)
                     self._bondorders_by_atomindices[topat1][topat2] = order
 
         # Loop over bonds in topology and store orders in the same order
@@ -423,7 +469,7 @@ class _Topology(Topology):
             SMIRKS string with tagged atoms.
             If there are N tagged atoms numbered 1..N, the resulting matches will be N-tuples of atoms that match the corresponding tagged atoms.
         aromaticity_model : str (optional)
-            Default None. Aromaticity model used in SMIRKS matching, as per getSMIRKSMatches_OEMol docs. If provided, pre-processes molecule with this model prior to matching. Otherwise, uses provided oemol.
+            Default None. Aromaticity model used in SMIRKS matching, as per getSMIRKSMatches_OEMol docs. If provided, pre-processes molecule with this model prior to matching. Otherwise, uses provided rdkmol.
 
         Returns
         -------
@@ -437,7 +483,7 @@ class _Topology(Topology):
         matches = list()
         for reference_molecule in self._reference_molecules:
             # Find all atomsets that match this definition in the reference molecule
-            refmol_matches = getSMIRKSMatches_OEMol( reference_molecule, smirks, aromaticity_model = aromaticity_model)
+            refmol_matches = getSMIRKSMatches_RDKMol( reference_molecule, smirks, aromaticity_model = aromaticity_model) #TODO a list of tuples is returned, need to solve aromaticity_model (sw)
 
             # Loop over matches
             for reference_atom_indices in refmol_matches:
@@ -447,13 +493,12 @@ class _Topology(Topology):
                     atom_indices = tuple([ reference_to_topology_atom_mapping[atom_index] for atom_index in reference_atom_indices ])
                     matches.append(atom_indices)
 
-        return matches #TODO a list of tuples (sw)
+        return matches
 
 
 #=============================================================================================
 # FORCEFIELD
 #=============================================================================================
-
 # Enumerated values for nonbonded method
 
 class NoCutoff(object):
@@ -565,7 +610,7 @@ class ForceField(object):
         # Parse XML, get force definitions
         self.parseXMLTrees()
 
-    def parseXMLTrees(self): #TODO decoding the actual ff data file (sw)
+    def parseXMLTrees(self): #decoding the actual ff data file (sw)
         """Parse XML trees, load force definitions."""
 
         trees = self._XMLTrees
@@ -608,7 +653,7 @@ class ForceField(object):
 
             # Now actually load
             for child in root:
-                if child.tag in parsers: #TODO at this stage parsers contain all the force types as key, value is some function that takes the all the definiation of the given force type with a topology obj (sw)
+                if child.tag in parsers: #TODO at this stage parsers contain all the force types as key, value is the parseElement function that takes the all the definition of the given force type with a topology obj (sw)
                     parsers[child.tag](child, self)
 
 
@@ -620,32 +665,31 @@ class ForceField(object):
         """Register a new generator."""
         self._forces.append(generator)
 
-    def getParameter(self, smirks = None, paramID=None, force_type='Implied'): #TODO transcribing the ff info (sw)
+    def getParameter(self, smirks = None, paramID=None, force_type='Implied'): #transcribing the ff info (sw)
         """Get info associated with a particular parameter as specified by SMIRKS or parameter ID, and optionally force term.
 
-    Parameters
-    ----------
-    smirks (optional) : str
-        Default None. If specified, will pull parameters on line containing this `smirks`.
-    paramID : str
-        Default None. If specified, will pull parameters on line with this `id`
-    force_type : str
-        Default "Implied". Optionally, specify a particular force type such as
-        "HarmonicBondForce" or "HarmonicAngleForce" etc. to search for a
-        matching ID or SMIRKS.
+        Parameters ----------
+        smirks (optional) : str
+            Default None. If specified, will pull parameters on line containing this `smirks`.
+        paramID : str
+            Default None. If specified, will pull parameters on line with this `id`
+        force_type : str
+            Default "Implied". Optionally, specify a particular force type such as
+            "HarmonicBondForce" or "HarmonicAngleForce" etc. to search for a
+            matching ID or SMIRKS.
 
 
-    Returns
-    -------
-    params : dict
-        Dictionary of attributes (parameters and their descriptions) from XML
+        Returns
+        -------
+        params : dict
+            Dictionary of attributes (parameters and their descriptions) from XML
 
 
-Usage notes: SMIRKS or parameter ID must be specified.
+        Usage notes: SMIRKS or parameter ID must be specified.
 
-To do: Update behavior of "Implied" force_type so it raises an exception if the parameter is not uniquely identified by the provided info.
-"""
-#TODO above
+        To do: Update behavior of "Implied" force_type so it raises an exception if the parameter is not uniquely identified by the provided info.
+        """
+        #TODO above (sw)
 
         # Check for valid input
         if smirks and paramID:
@@ -654,7 +698,7 @@ To do: Update behavior of "Implied" force_type so it raises an exception if the 
             raise ValueError("Error: Must specify SMIRKS or parameter ID.")
 
 
-        trees=self._XMLTrees
+        trees=self._XMLTrees #a list of ffxml files, each a tree structure (sw)
         # Loop over XML files we read
         for tree in trees:
             # Loop over tree
@@ -675,30 +719,30 @@ To do: Update behavior of "Implied" force_type so it raises an exception if the 
     def setParameter(self, params, smirks=None, paramID=None, force_type="Implied"):
         """Get info associated with a particular parameter as specified by SMIRKS or parameter ID, and optionally force term.
 
-    Parameters
-    ----------
-    params : dict
-        Dictionary of attributes (parameters and their descriptions) for XML,
-        i.e. as output by getParameter.
-    smirks (optional) : str
-        Default None. If specified, will set parameters on line containing this `smirks`.
-    paramID (optional) : str
-        Default None. If specified, will set parameters on line with this `id`
-    force_type (optional) : str
-        Default "Implied". Optionally, specify a particular force type such as
-        "HarmonicBondForce" or "HarmonicAngleForce" etc. to search for a
-        matching ID or SMIRKS.
+        Parameters
+        ----------
+        params : dict
+            Dictionary of attributes (parameters and their descriptions) for XML,
+            i.e. as output by getParameter.
+        smirks (optional) : str
+            Default None. If specified, will set parameters on line containing this `smirks`.
+        paramID (optional) : str
+            Default None. If specified, will set parameters on line with this `id`
+        force_type (optional) : str
+            Default "Implied". Optionally, specify a particular force type such as
+            "HarmonicBondForce" or "HarmonicAngleForce" etc. to search for a
+            matching ID or SMIRKS.
 
 
-    Returns
-    -------
-    status : bool
-        True/False as to whether that parameter was found and successfully set
+        Returns
+        -------
+            status : bool
+                True/False as to whether that parameter was found and successfully set
 
-Usage notes: SMIRKS or parameter ID must be specified.
+        Usage notes: SMIRKS or parameter ID must be specified.
 
-To do: Update behavior of "Implied" force_type so it raises an exception if the parameter is not uniquely identified by the provided info.
-"""
+        To do: Update behavior of "Implied" force_type so it raises an exception if the parameter is not uniquely identified by the provided info.
+        """
         # Check for valid input
         if smirks and paramID:
             raise ValueError("Error: Specify SMIRKS OR parameter ID but not both.")
@@ -763,26 +807,26 @@ To do: Update behavior of "Implied" force_type so it raises an exception if the 
     def addParameter(self, params, smirks, force_type, tag):
         """Add specified SMIRKS/parameter in the section under the specified force type.
 
-    Parameters
-    ----------
-    params : dict
-        Dictionary of attributes (parameters and their descriptions) for XML,
-        i.e. as output by getParameter.
-    smirks : str
-        SMIRKS pattern to associate with this parameter
-    force_type : str
-        Specify a particular force type such as "HarmonicBondForce" or "HarmonicAngleForce" in which to add this parameter
-    tag : str
-        Tag to use identifying this parameter, i.e. 'Bond' for a HarmonicBondForce, etc.
+        Parameters
+        ----------
+        params : dict
+            Dictionary of attributes (parameters and their descriptions) for XML,
+            i.e. as output by getParameter.
+        smirks : str
+            SMIRKS pattern to associate with this parameter
+        force_type : str
+            Specify a particular force type such as "HarmonicBondForce" or "HarmonicAngleForce" in which to add this parameter
+        tag : str
+            Tag to use identifying this parameter, i.e. 'Bond' for a HarmonicBondForce, etc.
 
 
-    Returns
-    -------
-    status : Bool
-        Successful? True or False.
+        Returns
+        -------
+        status : Bool
+            Successful? True or False.
 
 
-"""
+        """
 
         trees=self._XMLTrees
         # Loop over XML files we read
@@ -808,12 +852,12 @@ To do: Update behavior of "Implied" force_type so it raises an exception if the 
             tree=self._XMLTrees[idx]
             tree.write( filenm, xml_declaration=True, pretty_print=True)
 
-    def _assignPartialCharges(self, molecule, oechargemethod, modifycharges = True): #TODO require OEchem (sw)
+    def _assignPartialCharges(self, molecule, oechargemethod, modifycharges = True): #TODO require charging OEchem (sw)
         """Assign partial charges to the specified molecule using best practices.
 
         Parameters
         ----------
-        molecule : OEMol
+        molecule : RDKmol
             The molecule to be charged.
             NOTE: The molecule will be modified when charges are added.
         oechargemethod : str
@@ -830,7 +874,7 @@ To do: Update behavior of "Implied" force_type so it raises an exception if the 
         # Expand conformers
         if not openeye.oechem.OEChemIsLicensed(): raise(ImportError("Need License for OEChem!"))
         if not openeye.oeomega.OEOmegaIsLicensed(): raise(ImportError("Need License for OEOmega!"))
-        omega = openeye.oeomega.OEOmega()  #TODO comformer geneartor (sw)
+        omega = openeye.oeomega.OEOmega()  #comformer geneartor (sw)
         omega.SetMaxConfs(800)
         omega.SetCanonOrder(False)
         omega.SetSampleHydrogens(True)
@@ -917,14 +961,18 @@ To do: Update behavior of "Implied" force_type so it raises an exception if the 
             self.parseXMLTrees()
 
         # Make a deep copy of the input molecules so they are not modified by charging
-        molecules = copy.deepcopy(molecules) #TODO deepcopy has same name as original ?? (sw)
+        # molecules = copy.deepcopy(molecules)
+        molecules = molecules.__deepcopy__() #changed (sw)
 
+        ###############################################################################################33
+        ###############################################################################################33
+        ###############################################################################################33
         # Charge molecules, if needed
         if chargeMethod == None:
             # Don't charge molecules
             if verbose: print('Charges specified in provided molecules will be used.')
             oechargemethod = None
-        elif chargeMethod == 'BCC':
+        elif chargeMethod == 'BCC':  #RDKit does not have that option (sw)
             # Check if we have a BondChargeCorrectionGenerator populated
             force_generators = { force.__class__.__name__ : force for force in self._forces }
             if ('BondChargeCorrectionGenerator' in force_generators):
@@ -948,8 +996,9 @@ To do: Update behavior of "Implied" force_type so it raises an exception if the 
             for molecule in molecules:
                 self._assignPartialCharges(molecule, oechargemethod)
 
-        # Work with a modified form of the topology that provides additional accessors.
-        topology = _Topology(topology, molecules)
+
+                    ## originally topology = _Topology.... line is here
+
 
         # If the charge method was not an OpenEye AM1 method and we need Wiberg bond orders, obtain Wiberg bond orders
         if not (type(chargeMethod) == str and 'AM1' in chargeMethod) and self._use_fractional_bondorder:
@@ -957,10 +1006,17 @@ To do: Update behavior of "Implied" force_type so it raises an exception if the 
             for molecule in molecules:
                 # Do AM1 calculation just to get bond orders on moleules (discarding charges)
                 self._assignPartialCharges(molecule, "OECharges_AM1", modifycharges = False)
+        ###############################################################################################33
+        ###############################################################################################33
+        ###############################################################################################33
+
+        # Work with a modified form of the topology that provides additional accessors.
+        topology = _Topology(topology, molecules)
+
 
 
         # Update bond orders stored in the topology if needed
-        if self._use_fractional_bondorder:
+        if self._use_fractional_bondorder:  #TODO partial bond orders (sw)
             topology._updateBondOrders(Wiberg = True )
 
         # Create the System and add atoms
@@ -997,12 +1053,12 @@ To do: Update behavior of "Implied" force_type so it raises an exception if the 
         kwargs['nonbondedCutoff'] = nonbondedCutoff
 
         # Set user-specified charge method.
-        kwargs['chargeMethod'] = chargeMethod
+        kwargs['chargeMethod'] = chargeMethod  #TODO potentially need to be deleted (sw)
 
         # Add forces to the System
         for force in self._forces:
             if 'createForce' in dir(force):
-                force.createForce(system, topology, verbose=verbose, **kwargs)
+                force.createForce(system, topology, verbose=verbose, **kwargs) #createForce is in every individual generator class (sw)
 
         # Add center-of-mass motion removal, if requested
         if removeCMMotion:
@@ -1011,17 +1067,17 @@ To do: Update behavior of "Implied" force_type so it raises an exception if the 
         # Let force generators do postprocessing
         for force in self._forces:
             if 'postprocessSystem' in dir(force):
-                force.postprocessSystem(system, topology, **kwargs)
+                force.postprocessSystem(system, topology, **kwargs) #TODO need verbose option here? (sw)
 
         return system
 
-    def labelMolecules(self, oemols, verbose = False):  #TODO does not seem to be called anywhere (sw)
-        """Return labels for a list of OEMols corresponding to parameters from this force field. For each oemol, a dictionary of force types is returned, and for each force type, each force term is provided with the atoms involved, the parameter id assigned, and the corresponding SMIRKS.
+    def labelMolecules(self, rdkmols, verbose = False):  #TODO does not seem to be called anywhere (sw)
+        """Return labels for a list of RDKMols corresponding to parameters from this force field. For each rdkmol, a dictionary of force types is returned, and for each force type, each force term is provided with the atoms involved, the parameter id assigned, and the corresponding SMIRKS.
 
         Parameters
         ----------
-        oemols : list of OEMols
-            The OpenEye OEChem OEMol objects as a list; these will be labeled. Should include all atoms with the correct ordering atom atom numbers will be returned along with corresponding labeling.
+        rdkmols : list of RDKMol
+            The RDKmol Chem rdkmol objects as a list; these will be labeled. Should include all atoms with the correct ordering atom atom numbers will be returned along with corresponding labeling.
         verbose : bool
             If True, verbose output will be printed
 
@@ -1029,7 +1085,7 @@ To do: Update behavior of "Implied" force_type so it raises an exception if the 
         -------
         molecule_labels : list
             list of labels for molecules. Each entry in the list corresponds to
-            one molecule from the provided list of oemols and is a dictionary
+            one molecule from the provided list of rdkmols and is a dictionary
             keyed by force type, i.e. molecule_labels[0]['HarmonicBondForce']
             gives details for the harmonic bond parameters for the first
             molecule. Each element is a list of the form [ ( [ atom1, ...,
@@ -1046,7 +1102,7 @@ To do: Update behavior of "Implied" force_type so it raises an exception if the 
         molecule_labels = []
 
         # Loop over molecules and label
-        for idx,mol in enumerate(oemols):
+        for idx,mol in enumerate(rdkmols):
             molecule_labels.append({})
             for force in self._forces:
                 # Initialize dictionary storage for this force type
@@ -1061,11 +1117,10 @@ To do: Update behavior of "Implied" force_type so it raises an exception if the 
 # created.  Each generator class must define three methods: 1) a static method that takes an etree Element and a ForceField,
 # and returns the corresponding generator object; 2) a createForce() method that constructs the Force object and adds it
 # to the System; and 3) a labelForce() method that provides access to which
-# terms are applied to which atoms in specified oemols.
+# terms are applied to which atoms in specified rdkmols.
 # The static method should be added to the parsers map.
 #=============================================================================================
-
-def _validateSMIRKS(smirks, node=None): #TODO need rewrite this one (sw)
+def _validateSMIRKS(smirks, node=None): #TODO may not be achievable with RDKit
     """Validate the specified SMIRKS string.
 
     Parameters
@@ -1084,6 +1139,10 @@ def _validateSMIRKS(smirks, node=None): #TODO need rewrite this one (sw)
             raise Exception("Error parsing SMIRKS '%s'" % (node.attrib['smirks']))
 
     return smirks
+
+"""
+---------------------> Above done on 06/04/2017 <--------------------
+"""
 
 def _extractQuantity(node, parent, name, unit_name=None):
     """
@@ -1191,6 +1250,8 @@ def _check_for_missing_valence_terms(name, topology, assigned_terms, topological
         msg += str(assigned_set) + '\n'
         raise Exception(msg)
 
+
+
 import collections
 class TransformedDict(collections.MutableMapping):
     """A dictionary that applies an arbitrary key-altering
@@ -1247,6 +1308,7 @@ class ImproperDict(TransformedDict):
 # Force generators
 #=============================================================================================
 
+
 ## @private
 class HarmonicBondGenerator(object):
     """A HarmonicBondGenerator constructs a HarmonicBondForce."""
@@ -1254,7 +1316,7 @@ class HarmonicBondGenerator(object):
     class BondType(object):
         """A SMIRFF bond type."""
         def __init__(self, node, parent):
-            self.smirks = _validateSMIRKS(node.attrib['smirks'], node=node)
+            self.smirks = _validateSMIRKS(node.attrib['smirks'], node=node) #TODO change? (sw)
             self.pid = _extractQuantity(node, parent, 'id')
 
             # Determine if we are using fractional bond orders for this bond
@@ -1290,7 +1352,7 @@ class HarmonicBondGenerator(object):
         self._bondtypes.append(bond)
 
     @staticmethod
-    def parseElement(element, ff):  #TODO element is the parent node of each individual smirk definition
+    def parseElement(element, ff):  #element is the parent node of each individual smirk definition (sw)
         # Find existing force generator or create new one.
         existing = [f for f in ff._forces if isinstance(f, HarmonicBondGenerator)]
         if len(existing) == 0:
@@ -1357,12 +1419,12 @@ class HarmonicBondGenerator(object):
         # Check that no topological bonds are missing force parameters
         _check_for_missing_valence_terms('HarmonicBondForce', topology, bonds.keys(), topology.bonds())
 
-    def labelForce(self, oemol, verbose=False, **kwargs):
-        """Take a provided OEMol and parse HarmonicBondForce terms for this molecule.
+    def labelForce(self, rdkmol, verbose=False, **kwargs):  #TODO aromaticity_model issue? (sw)
+        """Take a provided RDKmol and parse HarmonicBondForce terms for this molecule.
 
         Parameters
         ----------
-            oemol : OEChem OEMol object for molecule to be examined
+            rdkmol : RDKit Chem mol object for molecule to be examined
 
         Returns
         ---------
@@ -1373,7 +1435,7 @@ class HarmonicBondGenerator(object):
         # Iterate over all defined bond SMIRKS, allowing later matches to override earlier ones.
         bonds = ValenceDict()
         for bond in self._bondtypes:
-            for atom_indices in getSMIRKSMatches_OEMol( oemol, bond.smirks, aromaticity_model = self.ff._aromaticity_model ):
+            for atom_indices in getSMIRKSMatches_RDKMol( rdkmol, bond.smirks, aromaticity_model = self.ff._aromaticity_model ):
                 bonds[atom_indices] = bond
 
         if verbose:
@@ -1381,7 +1443,7 @@ class HarmonicBondGenerator(object):
             print('HarmonicBondGenerator:')
             print('')
             for bond in self._bondtypes:
-                print('%64s : %8d matches' % (bond.smirks, len(getSMIRKSMatches_OEMol(oemol, bond.smirks, aromaticity_model = self.ff._aromaticity_model))))
+                print('%64s : %8d matches' % (bond.smirks, len(getSMIRKSMatches_RDKMol(rdkmol, bond.smirks, aromaticity_model = self.ff._aromaticity_model))))
             print('')
 
         # Add all bonds to the output list
@@ -1434,7 +1496,7 @@ class HarmonicAngleGenerator(object):
         for angle in element.findall('Angle'):
             generator.registerAngle(angle, element)
 
-    def createForce(self, system, topology, verbose=False, **kwargs):
+    def createForce(self, system, topology, verbose=False, **kwargs): #TODO aromaticity_model (sw)
         # Find existing force or create new one.
         existing = [system.getForce(i) for i in range(system.getNumForces())]
         existing = [f for f in existing if type(f) == openmm.HarmonicAngleForce]
@@ -1471,12 +1533,12 @@ class HarmonicAngleGenerator(object):
         # Check that no topological angles are missing force parameters
         _check_for_missing_valence_terms('HarmonicAngleForce', topology, angles.keys(), topology.angles())
 
-    def labelForce(self, oemol, verbose=False, **kwargs):
-        """Take a provided OEMol and parse HarmonicAngleForce terms for this molecule.
+    def labelForce(self, rdkmol, verbose=False, **kwargs):
+        """Take a provided RDKmol and parse HarmonicAngleForce terms for this molecule.
 
         Parameters
         ----------
-            oemol : OEChem OEMol object for molecule to be examined
+            rdkmol : RDKit Chem mol object for molecule to be examined
 
         Returns
         ---------
@@ -1487,7 +1549,7 @@ class HarmonicAngleGenerator(object):
         # Iterate over all defined angle types, allowing later matches to override earlier ones.
         angles = ValenceDict()
         for angle in self._angletypes:
-            for atom_indices in getSMIRKSMatches_OEMol(oemol, angle.smirks, aromaticity_model = self.ff._aromaticity_model):
+            for atom_indices in getSMIRKSMatches_RDKMol(rdkmol, angle.smirks, aromaticity_model = self.ff._aromaticity_model):
                 angles[atom_indices] = angle
 
         if verbose:
@@ -1495,7 +1557,7 @@ class HarmonicAngleGenerator(object):
             print('HarmonicAngleGenerator:')
             print('')
             for angle in self._angletypes:
-                print('%64s : %8d matches' % (angle.smirks, len(getSMIRKSMatches_OEMol(oemol, angle.smirks, aromaticity_model = self.ff._aromaticity_model))))
+                print('%64s : %8d matches' % (angle.smirks, len(getSMIRKSMatches_RDKMol(rdkmol, angle.smirks, aromaticity_model = self.ff._aromaticity_model))))
             print('')
 
         # Add all angles to the output list
@@ -1704,12 +1766,12 @@ class PeriodicTorsionGenerator(object):
 
 
 
-    def labelForce(self, oemol, verbose=False, **kwargs):
-        """Take a provided OEMol and parse PeriodicTorsionForce terms for this molecule.
+    def labelForce(self, rdkmol, verbose=False, **kwargs):
+        """Take a provided RDKmol and parse PeriodicTorsionForce terms for this molecule.
 
         Parameters
         ----------
-            oemol : OEChem OEMol object for molecule to be examined
+            rdkmol : RDKit Chem mol object for molecule to be examined
 
         Returns
         ---------
@@ -1721,12 +1783,12 @@ class PeriodicTorsionGenerator(object):
         # Iterate over all defined torsion types, allowing later matches to override earlier ones.
         torsions = ValenceDict()
         for torsion in self._propertorsiontypes:
-            for atom_indices in getSMIRKSMatches_OEMol(oemol, torsion.smirks, aromaticity_model = self.ff._aromaticity_model):
+            for atom_indices in getSMIRKSMatches_RDKMol(rdkmol, torsion.smirks, aromaticity_model = self.ff._aromaticity_model):
                 torsions[atom_indices] = torsion
         # Handle impropers in similar manner
         impropers = ImproperDict()
         for improper in self._impropertorsiontypes:
-            for atom_indices in getSMIRKSMatches_OEMol(oemol, improper.smirks, aromaticity_model = self.ff._aromaticity_model):
+            for atom_indices in getSMIRKSMatches_RDKMol(rdkmol, improper.smirks, aromaticity_model = self.ff._aromaticity_model):
                 impropers[atom_indices] = improper
 
         if verbose:
@@ -1734,12 +1796,12 @@ class PeriodicTorsionGenerator(object):
             print('PeriodicTorsionGenerator:')
             print('')
             for torsion in self._propertorsiontypes:
-                print('%64s : %8d matches' % (torsion.smirks, len(getSMIRKSMatches_OEMol(oemol, torsion.smirks, aromaticity_model = self.ff._aromaticity_model))))
+                print('%64s : %8d matches' % (torsion.smirks, len(getSMIRKSMatches_RDKMol(rdkmol, torsion.smirks, aromaticity_model = self.ff._aromaticity_model))))
             print('')
             print('PeriodicTorsionGenerator Impropers:')
             print('')
             for improper in self._impropertorsiontypes:
-                print('%64s : %8d matches' % (improper.smirks, len(getSMIRKSMatches_OEMol(oemol, improper.smirks, aromaticity_model = self.ff._aromaticity_model))))
+                print('%64s : %8d matches' % (improper.smirks, len(getSMIRKSMatches_RDKMol(rdkmol, improper.smirks, aromaticity_model = self.ff._aromaticity_model))))
             print('')
 
         # Add all torsions to the output list
@@ -1756,6 +1818,8 @@ class PeriodicTorsionGenerator(object):
         return force_terms
 
 parsers["PeriodicTorsionForce"] = PeriodicTorsionGenerator.parseElement
+
+#=============================================================================================
 
 ## @private
 class NonbondedGenerator(object):
@@ -1816,7 +1880,7 @@ class NonbondedGenerator(object):
         for atom in element.findall('Atom'):
             generator.registerAtom(atom, element)
 
-    def createForce(self, system, topology, nonbondedMethod=NoCutoff, nonbondedCutoff=0.9, verbose=False, **args):
+    def createForce(self, system, topology, nonbondedMethod=NoCutoff, nonbondedCutoff=0.9, verbose=False, **args): #TODO GetPartialCharge (sw)
         methodMap = {NoCutoff:openmm.NonbondedForce.NoCutoff,
                      CutoffNonPeriodic:openmm.NonbondedForce.CutoffNonPeriodic,
                      CutoffPeriodic:openmm.NonbondedForce.CutoffPeriodic,
@@ -1895,8 +1959,12 @@ class NonbondedGenerator(object):
         nonbonded = [f for f in system.getForces() if isinstance(f, openmm.NonbondedForce)][0]
         nonbonded.createExceptionsFromBonds(bondIndices, self.coulomb14scale, self.lj14scale)
 
-    def labelForce(self, oemol, verbose=False, **kwargs):
-        """Take a provided OEMol and parse NonbondedForce terms for this molecule.
+    def labelForce(self, rdkmol, verbose=False, **kwargs):
+        """Take a provided RDKmol and parse NonbondedForce terms for this molecule.
+
+        Parameters
+        ----------
+            rdkmol : RDKit Chem mol object for molecule to be examined
 
         Parameters
         ----------
@@ -1911,7 +1979,7 @@ class NonbondedGenerator(object):
         # Iterate over all defined Lennard-Jones types, allowing later matches to override earlier ones.
         atoms = ValenceDict()
         for ljtype in self._ljtypes:
-            for atom_indices in getSMIRKSMatches_OEMol(oemol, ljtype.smirks, aromaticity_model = self.ff._aromaticity_model):
+            for atom_indices in getSMIRKSMatches_RDKMol(rdkmol, ljtype.smirks, aromaticity_model = self.ff._aromaticity_model):
                 atoms[atom_indices] = ljtype
 
         if verbose:
@@ -1919,7 +1987,7 @@ class NonbondedGenerator(object):
             print('NonbondedForceGenerator:')
             print('')
             for ljtype in self._ljtypes:
-                print('%64s : %8d matches' % (ljtype.smirks, len(getSMIRKSMatches_OEMol(oemol, ljtype.smirks, aromaticity_model = self.ff._aromaticity_model))))
+                print('%64s : %8d matches' % (ljtype.smirks, len(getSMIRKSMatches_RDKMol(rdkmol, ljtype.smirks, aromaticity_model = self.ff._aromaticity_model))))
             print('')
 
         # Add all Lennard-Jones terms to the output list
@@ -1932,8 +2000,10 @@ class NonbondedGenerator(object):
 
 parsers["NonbondedForce"] = NonbondedGenerator.parseElement
 
+#=============================================================================================
+
 ## @private
-class BondChargeCorrectionGenerator(object): #TODO to read (sw)
+class BondChargeCorrectionGenerator(object):
     """A BondChargeCorrectionGenerator handles <BondChargeCorrections>."""
 
     class BondChargeCorrectionType(object):
@@ -2046,7 +2116,9 @@ class BondChargeCorrectionGenerator(object): #TODO to read (sw)
                     force.setParticleParameters(atom_indices[0], charge0, sigma0, epsilon0)
                     force.setParticleParameters(atom_indices[1], charge1, sigma1, epsilon1)
 
-parsers["BondChargeCorrections"] = BondChargeCorrectionGenerator.parseElement
+parsers["BondChargeCorrections"] = BondChargeCorrectionGenerator.parseElement  #TODO comment line out? (sw)
+
+#=============================================================================================
 
 ## @private
 class GBSAForceGenerator(object):
@@ -2081,7 +2153,7 @@ class GBSAForceGenerator(object):
                 if name in node.attrib:
                     provided_parameters.append(name)
                     value = _extractQuantity(node, parent, name)
-                    setattr(self, name, value)
+                    setattr(self, name, value) #pretty cool didn't know that (sw)
                 else:
                     missing_parameters.append(name)
             if len(missing_parameters) > 0:
@@ -2140,7 +2212,7 @@ class GBSAForceGenerator(object):
 
     def createForce(self, system, topology, verbose=False, **args):
         from smarty import gbsaforces
-        force_class = getattr(gbsaforces, self.gb_model)
+        force_class = getattr(gbsaforces, self.gb_model) #cool didn't know that (sw)
         force = force_class(**self.parameters)
         system.addForce(force)
 
@@ -2166,13 +2238,13 @@ class GBSAForceGenerator(object):
         for atom in topology.atoms():
             force.addParticle(params)
         # Set the particle Lennard-Jones terms.
-        natoms = sum([1 for atom in topology.atoms()])
+        natoms = sum([1 for atom in topology.atoms()]) #not being used? (sw)
         for (atom_indices, gbsa_type) in atoms.items():
             params = [0] + [ getattr(gbsa_type, name) for name in expected_parameters ]
             force.setParticleParameters(atom_indices[0], params)
 
         # Set the partial charges based on reference molecules.
-        for reference_molecule in topology._reference_molecules:
+        for reference_molecule in topology._reference_molecules: #TODO need deal with partial charge
             atom_mappings = topology._reference_to_topology_atom_mappings[reference_molecule]
             for atom_mapping in atom_mappings:
                 for (atom, atom_index) in zip(reference_molecule.GetAtoms(), atom_mapping):
@@ -2184,12 +2256,12 @@ class GBSAForceGenerator(object):
     def postprocessSystem(self, system, topology, verbose=False, **args):
         pass
 
-    def labelForce(self, oemol, verbose=False, **kwargs):
-        """Take a provided OEMol and parse HarmonicBondForce terms for this molecule.
+    def labelForce(self, rdkmol, verbose=False, **kwargs):
+        """Take a provided RDKmol and parse GBSAForce terms for this molecule.
 
         Parameters
         ----------
-            oemol : OEChem OEMol object for molecule to be examined
+            rdkmol : RDKit Chem mol object for molecule to be examined
 
         Returns
         ---------
@@ -2200,7 +2272,7 @@ class GBSAForceGenerator(object):
         # Iterate over all defined Lennard-Jones types, allowing later matches to override earlier ones.
         atoms = ValenceDict()
         for gbsa_type in self._ljtypes:
-            for atom_indices in getSMIRKSMatches_OEMol(oemol, gbsa_type.smirks, aromaticity_model = self.ff._aromaticity_model):
+            for atom_indices in getSMIRKSMatches_RDKMol(rdkmol, gbsa_type.smirks, aromaticity_model = self.ff._aromaticity_model):
                 atoms[atom_indices] = gbsa_type
 
         if verbose:
@@ -2208,7 +2280,7 @@ class GBSAForceGenerator(object):
             print('GBSAForceGenerator:')
             print('')
             for ljtype in self._ljtypes:
-                print('%64s : %8d matches' % (gbsa_type.smirks, len(getSMIRKSMatches_OEMol(oemol, gbsa_type.smirks, aromaticity_model = self.ff._aromaticity_model))))
+                print('%64s : %8d matches' % (gbsa_type.smirks, len(getSMIRKSMatches_RDKMol(rdkmol, gbsa_type.smirks, aromaticity_model = self.ff._aromaticity_model))))
             print('')
 
         # Add all GBSA terms to the output list
